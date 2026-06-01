@@ -997,6 +997,7 @@ body{padding-bottom:40px}
   <div class="modal">
     <div class="m-title" id="m-title">Edit Dispatch</div>
     <div class="m-sub"   id="m-sub"></div>
+    <div id="m-fa-warn" style="display:none;background:#2a0a0a;border:1px solid #7a2020;border-radius:5px;padding:7px 10px;font-size:11px;color:#f47067;margin-bottom:10px;font-weight:600">⛔ Filter Aid — ไม่รับสินค้าวันเสาร์ / อาทิตย์ / วันหยุดนักขัตฤกษ์</div>
     <div class="m-row">
       <div class="m-lbl" id="m-lbl">Trucks</div>
       <input class="m-inp" type="number" id="m-inp" min="0">
@@ -1108,6 +1109,24 @@ let OVR={}, RES=[], WK=0, SEL=1;
 let RM_ORDERING={}; // {matId: true/false} — true=currently ordering cycle, false=holding until 50%
 // Per-day rate overrides: {day: {matId: rate}}
 let DAY_RATES={};
+
+// ── Filter Aid no-delivery days ─────────────────────────────────────────────
+// Public holidays: store as 'YYYY-MM-DD' strings. Edit to match actual calendar.
+let FA_HOLIDAYS=[
+  '2026-01-01','2026-01-02','2026-02-26','2026-04-06','2026-04-13',
+  '2026-04-14','2026-04-15','2026-05-01','2026-05-04','2026-05-22',
+  '2026-06-03','2026-07-28','2026-07-29','2026-08-12','2026-10-13',
+  '2026-10-23','2026-12-05','2026-12-10','2026-12-31'
+];
+function isFABlocked(d){
+  var rd=getRealDate(d);
+  if(!rd)return false;
+  // Block Saturday (dow='Sat') and Sunday (dow='Sun')
+  if(rd.dow==='Sat'||rd.dow==='Sun')return true;
+  // Block public holidays
+  var iso=rd.year+'-'+String(rd.month).padStart(2,'0')+'-'+String(rd.day).padStart(2,'0');
+  return FA_HOLIDAYS.indexOf(iso)>=0;
+}
 // Named rate presets: [{id, name, rates:{matId:val}, appliedDays:[]}]
 let PRESETS=[];
 // Plans: up to 4 named snapshots of the full state
@@ -1251,19 +1270,22 @@ function calcProcessRates(){
   const fa_inj2=(PROC_FORMULA.fa_inj2_kg*roundsPerHr)/1000;  // T/h shared
   const fa_hr=(fa_inj1+fa_inj2)*getExtraMultiplier(2);  const fa_day=fa_hr*24;
 
-  // 3. Citric Acid — all 3 injectors use fixed ca_flowrate (m³/h/train)
-  const caFR=PROC_FORMULA.ca_flowrate;  // 22 m³/h/train
-  //    Inj1: citricSP (kg/m³) × ca_flowrate → kg/h/train
-  const ca_inj1_t1_kg=PROC.citricSP*caFR;
-  const ca_inj1_t2_kg=PROC.citricSP*caFR;
+  // 3. Citric Acid — injectors scale with actual process flow per train
+  const caFR_fixed=PROC_FORMULA.ca_flowrate;  // 22 m³/h/train (reference only)
+  //    Use actual flow per train (feed - pipe loss), same as BE/FA
+  const caFR_t1=flow1;  // actual flow train 1 (m³/h)
+  const caFR_t2=flow2;  // actual flow train 2 (m³/h)
+  //    Inj1: citricSP (kg/m³) × actual flow → kg/h/train
+  const ca_inj1_t1_kg=PROC.citricSP*caFR_t1;
+  const ca_inj1_t2_kg=PROC.citricSP*caFR_t2;
   const ca_inj1=(ca_inj1_t1_kg+ca_inj1_t2_kg)/1000;  // T/h
-  //    Inj2: ca_inj2_pct% × 1000 × ca_flowrate → kg/h/train
-  const ca_inj2_t1_kg=(PROC_FORMULA.ca_inj2_pct/100)*1000*caFR;
-  const ca_inj2_t2_kg=(PROC_FORMULA.ca_inj2_pct/100)*1000*caFR;
+  //    Inj2: ca_inj2_pct% × 1000 × actual flow → kg/h/train
+  const ca_inj2_t1_kg=(PROC_FORMULA.ca_inj2_pct/100)*1000*caFR_t1;
+  const ca_inj2_t2_kg=(PROC_FORMULA.ca_inj2_pct/100)*1000*caFR_t2;
   const ca_inj2=(ca_inj2_t1_kg+ca_inj2_t2_kg)/1000;  // T/h
-  //    Inj3: ca_inj3_pct% × 1000 × ca_flowrate → kg/h/train
-  const ca_inj3_t1_kg=(PROC_FORMULA.ca_inj3_pct/100)*1000*caFR;
-  const ca_inj3_t2_kg=(PROC_FORMULA.ca_inj3_pct/100)*1000*caFR;
+  //    Inj3: ca_inj3_pct% × 1000 × actual flow → kg/h/train
+  const ca_inj3_t1_kg=(PROC_FORMULA.ca_inj3_pct/100)*1000*caFR_t1;
+  const ca_inj3_t2_kg=(PROC_FORMULA.ca_inj3_pct/100)*1000*caFR_t2;
   const ca_inj3=(ca_inj3_t1_kg+ca_inj3_t2_kg)/1000;  // T/h
   const ca_hr=(ca_inj1+ca_inj2+ca_inj3)*getExtraMultiplier(3);  const ca_day=ca_hr*24;
 
@@ -1538,7 +1560,7 @@ function buildFormulaCard(){
   // ── live values for formula display ──
   var r2=calcProcessRates();
   var fpt2=r2.feedPerTrain;
-  var caFR2=PROC_FORMULA.ca_flowrate;
+  var caFR2=r2.flow1;  // actual flow train 1 (feed - pipe loss), scales with feed
   var rds2=PROC.precoatRounds;
   var precoatKgDay2=(rds2*PROC_FORMULA.fa_inj2_kg);
   var precoatKgH2=(precoatKgDay2/24);
@@ -1599,8 +1621,7 @@ function buildFormulaCard(){
     +'<span style="font-size:12px;font-weight:700;color:#e6edf3">'+(r2.ca.inj1_t1_kg+r2.ca.inj2_t1_kg+r2.ca.inj3_t1_kg).toFixed(2)+' <span style="font-size:9px;font-weight:400;color:#5a7090">kg/h/train</span></span>'
     +'</div>';
   fH+='<div style="margin:6px 0 4px"></div>';
-  fH+='<div style="font-size:9px;color:#4a6080;margin-bottom:4px">Inj1 SP set in Feed Parameters above</div>';
-  fH+=fInp('ca_flowrate','Flowrate','m³/h','0.1','');
+  fH+='<div style="font-size:9px;color:#4a6080;margin-bottom:4px">Flowrate = actual process flow per train (scales with feed)</div>';
   fH+=fInp('ca_inj2_pct','Inj2 dosing %','%','0.0001','');
   fH+=fInp('ca_inj3_pct','Inj3 dosing %','%','0.001','');
   fH+=fExtra(3);
@@ -1889,21 +1910,22 @@ function buildProcess(){
       +fline('',fo('÷ 24 h  ÷ 2 trains'),faPrecoatKgH.toFixed(2),'kg/h/train')
     ),fa_t1,fa_t2);
 
-  // Citric Acid — 3 injectors using ca_flowrate (22 m³/h/train)
-  var caFR_d=PROC_FORMULA.ca_flowrate;
+  // Citric Acid — 3 injectors using actual flow per train (scales with feed)
+  var caFR_d1=r.flow1.toFixed(1);  // actual flow train 1
+  var caFR_d2=r.flow2.toFixed(1);  // actual flow train 2
   var ca_t1=(r.ca.inj1_t1_kg+r.ca.inj2_t1_kg+r.ca.inj3_t1_kg)/1000*getExtraMultiplier(3);
   var ca_t2=(r.ca.inj1_t2_kg+r.ca.inj2_t2_kg+r.ca.inj3_t2_kg)/1000*getExtraMultiplier(3);
   var caTotal_t1=r.ca.inj1_t1_kg+r.ca.inj2_t1_kg+r.ca.inj3_t1_kg;
   var caTotal_t2=r.ca.inj1_t2_kg+r.ca.inj2_t2_kg+r.ca.inj3_t2_kg;
-  function caLines(inj1kg,inj2kg,inj3kg,totalkg){
+  function caLines(inj1kg,inj2kg,inj3kg,totalkg,caFR_d){
     return fline('Inj1',fv('SP')+fo('×')+fn(caFR_d+' m³/h'),inj1kg.toFixed(2),'kg/h')
           +fline('Inj2',fv('dosing')+fo('×')+fn('1000')+fo('×')+fn(caFR_d+' m³/h'),inj2kg.toFixed(2),'kg/h')
           +fline('Inj3',fv('dosing')+fo('×')+fn('1000')+fo('×')+fn(caFR_d+' m³/h'),inj3kg.toFixed(2),'kg/h')
           +fline('','<span style="color:#4a6a8a">────────────</span>',totalkg.toFixed(2),'kg/h total');
   }
   H+=rateRow(3,'Citric Acid','#a371f7',r.ca.hr,r.ca.day,'T',
-    tRow(caLines(r.ca.inj1_t1_kg,r.ca.inj2_t1_kg,r.ca.inj3_t1_kg,caTotal_t1),
-         caLines(r.ca.inj1_t2_kg,r.ca.inj2_t2_kg,r.ca.inj3_t2_kg,caTotal_t2)),ca_t1,ca_t2);
+    tRow(caLines(r.ca.inj1_t1_kg,r.ca.inj2_t1_kg,r.ca.inj3_t1_kg,caTotal_t1,caFR_d1),
+         caLines(r.ca.inj1_t2_kg,r.ca.inj2_t2_kg,r.ca.inj3_t2_kg,caTotal_t2,caFR_d2)),ca_t1,ca_t2);
 
   // Caustic Soda: ca_inj1 × 0.625 × causticSP / 50 × 100 → kg/h/train
   var csDose=PROC_FORMULA.cs_inj1_pct;
@@ -2253,6 +2275,8 @@ function runSim(){
     const ov=OVR[d];
     if(ov){
       MATS.forEach(m=>{
+        // Filter Aid cannot be delivered on Sat, Sun, or public holidays
+        if(m.id===2&&isFABlocked(d))return;
         let v=ov[m.id];if(!v&&v!==0)return;
         // Support AM/PM split object {am,pm,total} for BOTH-pk materials
         if(typeof v==='object'&&v!==null){
@@ -2277,7 +2301,11 @@ function runSim(){
         const projStk={...stkO,[id]:eodStk};
         const g=autoWS(m_,projStk);if(!g)return;tryD(id,pk,g);
       });
-      [[1,'AM'],[2,'AM']].forEach(([id,pk])=>{const g=autoRM(M[id],stkO);if(!g)return;tryD(id,pk,g);});
+      [[1,'AM'],[2,'AM']].forEach(([id,pk])=>{
+        // Filter Aid (id=2) cannot be delivered on Sat, Sun, or public holidays
+        if(id===2&&isFABlocked(d))return;
+        const g=autoRM(M[id],stkO);if(!g)return;tryD(id,pk,g);
+      });
       const ca=autoRM(M[3],stkO);if(ca)tryD(3,'AM',Math.min(ca,1));
       const cs=autoRM(M[4],stkO);if(cs)tryD(4,'NOON',cs);
     }
@@ -3045,6 +3073,7 @@ function exportSchedule(){
         +'<td class="mat-name" rowspan="4" style="font-weight:700;font-size:12px">'+m.s+'</td>'
         +'<td class="sub-lbl">AM — คัน</td>';
       days.forEach(function(d){
+        if(m.id===2&&isFABlocked(d)){out+='<td style="background:#f5e6e6;color:#c62828;font-size:9px;text-align:center">หยุด</td>';return;}
         var r=RES[d-1]; var tA=r?r.dpA[m.id]||0:0;
         out+='<td>'+(tA>0?'<b>'+tA+'</b>':'<span class="empty">—</span>')+'</td>';
       });
@@ -3054,6 +3083,7 @@ function exportSchedule(){
       out+='<tr class="row-vol">'
         +'<td class="sub-lbl">AM — '+volUnit+'</td>';
       days.forEach(function(d){
+        if(m.id===2&&isFABlocked(d)){out+='<td style="background:#f5e6e6"></td>';return;}
         var r=RES[d-1]; var tA=r?r.dpA[m.id]||0:0;
         out+='<td>'+(tA>0?(tA*m.pv).toFixed(1)+' '+volUnit:'<span class="empty">—</span>')+'</td>';
       });
@@ -3063,6 +3093,7 @@ function exportSchedule(){
       out+='<tr class="row-time">'
         +'<td class="sub-lbl">PM — คัน</td>';
       days.forEach(function(d){
+        if(m.id===2&&isFABlocked(d)){out+='<td style="background:#f5e6e6"></td>';return;}
         var r=RES[d-1]; var tN=r?r.dpN[m.id]||0:0;
         out+='<td>'+(tN>0?'<b>'+tN+'</b>':'<span class="empty">—</span>')+'</td>';
       });
@@ -3072,6 +3103,7 @@ function exportSchedule(){
       out+='<tr class="row-slots">'
         +'<td class="sub-lbl">PM — '+volUnit+'</td>';
       days.forEach(function(d){
+        if(m.id===2&&isFABlocked(d)){out+='<td style="background:#f5e6e6"></td>';return;}
         var r=RES[d-1]; var tN=r?r.dpN[m.id]||0:0;
         out+='<td>'+(tN>0?(tN*m.pv).toFixed(1)+' '+volUnit:'<span class="empty">—</span>')+'</td>';
       });
@@ -3163,6 +3195,12 @@ function matRow(m,days,isMonth){
     const r=RES[d-1];
     const isSel=isMonth&&!!SEL_DAYS[d];
     const selStyle=isSel?'background:#0a1a32':'';
+    // FA (id=2) blocked on weekends/holidays — show closed cell
+    if(m.id===2&&isFABlocked(d)){
+      const bg='background:#1a0a0a;';
+      H+=`<td class="td-slot" style="${bg}" colspan="3" title="ไม่รับ FA วันหยุด"><span style="font-size:9px;color:#5a2020;font-weight:600;letter-spacing:.5px">✕ หยุด</span></td>`;
+      return;
+    }
     if(!r){H+=`<td class="td-slot" style="${selStyle}"></td><td class="td-slot" style="${selStyle}"></td><td class="td-trip" style="${selStyle}"></td>`;return;}
     const tA=r.dpA[m.id]||0,tN=r.dpN[m.id]||0,tot=tA+tN;
     const amS=tA?slotStr(T_AM,tA,m.lm):null;
@@ -3201,6 +3239,27 @@ function openM(d,id){
   const hrRate=(effRate/24).toFixed(4);
   document.getElementById('m-title').textContent=(()=>{const _mtRD=getRealDate(d);const _mtMN=['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];return String(_mtRD.day).padStart(2,'0')+' '+_mtMN[_mtRD.month]+' ('+(r?r.dow:'?')+') — '+(m.ln||m.n);})();
   document.getElementById('m-sub').innerHTML=`${m.dk} · ${m.pk} · ${m.pv} per truck · ${m.lm} min/truck · Max ${maxT} &nbsp;<span style="font-family:monospace;font-size:10px;color:#58a6ff;background:#0d1f3a;padding:1px 6px;border-radius:3px;border:1px solid #1d3a6a">⏱ ${hrRate} ${m.u||'m³'}/hr · ${effRate} ${m.u||'m³'}/day</span>`;
+
+  // FA blocked warning
+  const faWarnEl=document.getElementById('m-fa-warn');
+  if(id===2&&isFABlocked(d)){
+    if(faWarnEl)faWarnEl.style.display='';
+    // Disable inputs
+    const inp=document.getElementById('m-inp');
+    if(inp){inp.disabled=true;inp.value=0;}
+    const inpAm=document.getElementById('m-inp-am');
+    const inpPm=document.getElementById('m-inp-pm');
+    if(inpAm){inpAm.disabled=true;inpAm.value=0;}
+    if(inpPm){inpPm.disabled=true;inpPm.value=0;}
+  } else {
+    if(faWarnEl)faWarnEl.style.display='none';
+    const inp=document.getElementById('m-inp');
+    if(inp)inp.disabled=false;
+    const inpAm=document.getElementById('m-inp-am');
+    const inpPm=document.getElementById('m-inp-pm');
+    if(inpAm)inpAm.disabled=false;
+    if(inpPm)inpPm.disabled=false;
+  }
 
   // For BOTH-pk materials, show AM/PM split inputs
   const isBoth=m.pk==='BOTH';
